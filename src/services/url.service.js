@@ -3,48 +3,45 @@ const counterRepository = require("../repositories/counter.repositories");
 const { encode } = require("./base62");
 const {redisClient} = require("../config/redis");
 
+const {
+    cacheUrl,
+    getShortIdFromCache,getLongUrlFromCache
+} = require("./cache.service");
+
+
 
 const createShortUrl = async (longUrl) => {
-    // ---------- 1. Check Redis ----------
-    try {
-        const cachedShortId = await redisClient.get(`long:${longUrl}`);
 
-        if (cachedShortId) {
-            console.log("✅ Duplicate URL found in Redis");
+    // -------------------------
+    // 1. Check Redis
+    // -------------------------
 
-            return {
-                shortId: cachedShortId,
-                longUrl,
-                shortUrl: `${process.env.BASE_URL}/${cachedShortId}`,
-            };
-        }
-    } catch (err) {
-        console.error("Redis GET Error:", err.message);
+    const cachedShortId = await getShortIdFromCache(longUrl);
+
+    if (cachedShortId) {
+        console.log("✅ Duplicate URL found in Redis");
+
+        return {
+            shortId: cachedShortId,
+            longUrl,
+            shortUrl: `${process.env.BASE_URL}/${cachedShortId}`,
+        };
     }
 
-    // ---------- 2. Check MongoDB ----------
+    // -------------------------
+    // 2. Check MongoDB
+    // -------------------------
+
     const existingUrl = await urlRepository.findByLongUrl(longUrl);
 
     if (existingUrl) {
+
         console.log("📦 Duplicate URL found in MongoDB");
 
-        // Cache both mappings (ignore Redis failure)
-        try {
-            await Promise.all([
-                redisClient.set(
-                    `long:${existingUrl.longUrl}`,
-                    existingUrl.shortId,
-                    { EX: 3600 }
-                ),
-                redisClient.set(
-                    `short:${existingUrl.shortId}`,
-                    existingUrl.longUrl,
-                    { EX: 3600 }
-                )
-            ]);
-        } catch (err) {
-            console.error("Redis SET Error:", err.message);
-        }
+        await cacheUrl(
+            existingUrl.shortId,
+            existingUrl.longUrl
+        );
 
         return {
             shortId: existingUrl.shortId,
@@ -53,46 +50,49 @@ const createShortUrl = async (longUrl) => {
         };
     }
 
-    // ---------- 3. Generate New Short ID ----------
+    // -------------------------
+    // 3. Generate Short ID
+    // -------------------------
+
     const counter = await counterRepository.getNextSequence();
+
     const shortId = encode(counter.seq);
 
     try {
-        // ---------- 4. Save to MongoDB ----------
+
+        // -------------------------
+        // 4. Save in MongoDB
+        // -------------------------
+
         const newUrl = await urlRepository.create({
             shortId,
             longUrl,
         });
 
-        // ---------- 5. Cache Both Mappings ----------
-        try {
-            await Promise.all([
-                redisClient.set(
-                    `long:${newUrl.longUrl}`,
-                    shortId,
-                    { EX: 3600 }
-                ),
-                redisClient.set(
-                    `short:${shortId}`,
-                    newUrl.longUrl,
-                    { EX: 3600 }
-                )
-            ]);
-        } catch (err) {
-            console.error("Redis SET Error:", err.message);
-        }
+        // -------------------------
+        // 5. Cache
+        // -------------------------
+
+        await cacheUrl(
+            newUrl.shortId,
+            newUrl.longUrl
+        );
 
         return {
-            shortId,
+            shortId: newUrl.shortId,
             longUrl: newUrl.longUrl,
-            shortUrl: `${process.env.BASE_URL}/${shortId}`,
+            shortUrl: `${process.env.BASE_URL}/${newUrl.shortId}`,
         };
 
     } catch (err) {
 
-        // ---------- 6. Handle Duplicate URL Race Condition ----------
+        // -------------------------
+        // 6. Race Condition
+        // -------------------------
+
         if (err.code === 11000) {
-            console.log("⚠️ Duplicate key detected. Fetching existing URL...");
+
+            console.log("⚠️ Duplicate key detected");
 
             const existingUrl = await urlRepository.findByLongUrl(longUrl);
 
@@ -100,23 +100,10 @@ const createShortUrl = async (longUrl) => {
                 throw err;
             }
 
-            // Cache both mappings
-            try {
-                await Promise.all([
-                    redisClient.set(
-                        `long:${existingUrl.longUrl}`,
-                        existingUrl.shortId,
-                        { EX: 3600 }
-                    ),
-                    redisClient.set(
-                        `short:${existingUrl.shortId}`,
-                        existingUrl.longUrl,
-                        { EX: 3600 }
-                    )
-                ]);
-            } catch (redisErr) {
-                console.error("Redis SET Error:", redisErr.message);
-            }
+            await cacheUrl(
+                existingUrl.shortId,
+                existingUrl.longUrl
+            );
 
             return {
                 shortId: existingUrl.shortId,
@@ -219,17 +206,26 @@ const createShortUrl = async (longUrl) => {
 // };
 const getOriginalUrl = async (shortId) => {
 
-    const cachedUrl = await redisClient.get(shortId);
+    // -------------------------
+    // 1. Check Redis
+    // -------------------------
 
-    if (cachedUrl) {
+    const cachedLongUrl = await getLongUrlFromCache(shortId);
+
+    if (cachedLongUrl) {
+
         console.log("✅ Cache HIT");
 
         return {
-            longUrl: cachedUrl,
+            longUrl: cachedLongUrl,
         };
     }
 
     console.log("❌ Cache MISS");
+
+    // -------------------------
+    // 2. Check MongoDB
+    // -------------------------
 
     const url = await urlRepository.findByShortId(shortId);
 
@@ -237,10 +233,14 @@ const getOriginalUrl = async (shortId) => {
         return null;
     }
 
-    // Store in Redis
-    await redisClient.set(shortId, url.longUrl, {
-        EX: 7200,
-    });
+    // -------------------------
+    // 3. Cache for future requests
+    // -------------------------
+
+    await cacheUrl(
+        url.shortId,
+        url.longUrl
+    );
 
     return url;
 };

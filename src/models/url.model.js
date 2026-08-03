@@ -9,6 +9,8 @@ const urlSchema = new mongoose.Schema({
     longUrl : {
         type:String,
         required:true,
+        unique: true,
+        index: true,
     },
     createdAt : {
         type : Date,

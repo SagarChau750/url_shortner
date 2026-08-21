@@ -11,9 +11,22 @@ const findByShortId = async (shortId) => {
 const findByLongUrl = async (longUrl) => {
     return await URL.findOne({ longUrl });
 };
+const recordClick = async (shortId) => {
+    return await URL.findOneAndUpdate(
+        { shortId },
+        {
+            $inc: { clicks: 1 },
+            $set: { lastVisited: new Date() },
+        },
+        {
+            returnDocument: "after"
+        }
+    );
+};
 
 module.exports = {
     create,
     findByShortId,
     findByLongUrl,
+    recordClick,
 };

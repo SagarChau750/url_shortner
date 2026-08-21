@@ -216,6 +216,9 @@ const getOriginalUrl = async (shortId) => {
 
         console.log("✅ Cache HIT");
 
+        // Record successful click
+        await urlRepository.recordClick(shortId);
+
         return {
             longUrl: cachedLongUrl,
         };
@@ -234,7 +237,13 @@ const getOriginalUrl = async (shortId) => {
     }
 
     // -------------------------
-    // 3. Cache for future requests
+    // 3. Record successful click
+    // -------------------------
+
+    await urlRepository.recordClick(shortId);
+
+    // -------------------------
+    // 4. Cache for future requests
     // -------------------------
 
     await cacheUrl(
